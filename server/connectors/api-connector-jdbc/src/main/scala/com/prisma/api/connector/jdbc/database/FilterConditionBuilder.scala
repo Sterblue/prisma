@@ -90,6 +90,53 @@ trait FilterConditionBuilder extends BuilderBase {
     val newAlias                   = relationField.relatedModel_!.dbName + "_" + alias
     val invertConditionOfSubSelect = relationFilter.condition == EveryRelatedNode
 
+    def getNestedNonRelationalQuery(nested: Filter) = {
+      val condition = buildConditionForFilter(nested, newAlias)
+      sql
+        .select(relationColumn(relationField))
+        .from(relationTable(relation))
+        .innerJoin(modelTable(relationField.relatedModel_!).as(newAlias))
+        .on(modelIdColumn(newAlias, relationField.relatedModel_!).eq(relationColumn(relationField.relatedField)))
+        .where(condition.invert(invertConditionOfSubSelect))
+    }
+
+    def getIDNullCondition = {
+      relationFilter.condition match {
+        case EveryRelatedNode => field(relationColumn(relationField.relatedField)).isNotNull
+        case AtLeastOneRelatedNode | NoRelatedNode | ToOneRelatedNode => field(relationColumn(relationField.relatedField)).isNull
+      }
+    }
+
+    def getIDNotNullCondition = {
+      relationFilter.condition match {
+        case EveryRelatedNode => field(relationColumn(relationField.relatedField)).isNull
+        case AtLeastOneRelatedNode | NoRelatedNode | ToOneRelatedNode => field(relationColumn(relationField.relatedField)).isNotNull
+      }
+    }
+
+    def getNestedIDCondition(nestedCondition: ScalarCondition): Condition = {
+      nestedCondition match {
+        case Contains(_)                => field(relationColumn(relationField.relatedField)).contains(placeHolder)
+        case NotContains(_)             => field(relationColumn(relationField.relatedField)).notContains(placeHolder)
+        case StartsWith(_)              => field(relationColumn(relationField.relatedField)).startsWith(placeHolder)
+        case NotStartsWith(_)           => field(relationColumn(relationField.relatedField)).startsWith(placeHolder).not()
+        case EndsWith(_)                => field(relationColumn(relationField.relatedField)).endsWith(placeHolder)
+        case NotEndsWith(_)             => field(relationColumn(relationField.relatedField)).endsWith(placeHolder).not()
+        case LessThan(_)                => field(relationColumn(relationField.relatedField)).lessThan(placeHolder)
+        case GreaterThan(_)             => field(relationColumn(relationField.relatedField)).greaterThan(placeHolder)
+        case LessThanOrEquals(_)        => field(relationColumn(relationField.relatedField)).lessOrEqual(placeHolder)
+        case GreaterThanOrEquals(_)     => field(relationColumn(relationField.relatedField)).greaterOrEqual(placeHolder)
+        case NotEquals(NullGCValue)     => getIDNotNullCondition
+        case NotEquals(_)               => field(relationColumn(relationField.relatedField)).notEqual(placeHolder)
+        case Equals(NullGCValue)        => getIDNullCondition
+        case Equals(_)                  => field(relationColumn(relationField.relatedField)).equal(placeHolder)
+        case In(Vector(NullGCValue))    => getIDNullCondition
+        case NotIn(Vector(NullGCValue)) => getIDNotNullCondition
+        case In(values)                 => field(relationColumn(relationField.relatedField)).in(Vector.fill(values.length) { placeHolder }: _*)
+        case NotIn(values)              => field(relationColumn(relationField.relatedField)).notIn(Vector.fill(values.length) { placeHolder }: _*)
+      }
+    }
+
     relationFilter.nestedFilter match {
       case nested: RelationFilter =>
         val condition = inStatementForRelationCondition(
@@ -101,15 +148,17 @@ trait FilterConditionBuilder extends BuilderBase {
           .select(relationColumn(relationField))
           .from(relationTable(relation))
           .where(condition.invert(invertConditionOfSubSelect))
-
+      case nested: ScalarFilter =>
+        if (nested.field.isId) {
+          sql
+            .select(relationColumn(relationField))
+            .from(relationTable(relation))
+            .where(getNestedIDCondition(nested.condition))
+        }
+        else
+          getNestedNonRelationalQuery(nested)
       case nested =>
-        val condition = buildConditionForFilter(nested, newAlias)
-        sql
-          .select(relationColumn(relationField))
-          .from(relationTable(relation))
-          .innerJoin(modelTable(relationField.relatedModel_!).as(newAlias))
-          .on(modelIdColumn(newAlias, relationField.relatedModel_!).eq(relationColumn(relationField.relatedField)))
-          .where(condition.invert(invertConditionOfSubSelect))
+        getNestedNonRelationalQuery(nested)
     }
   }
 
